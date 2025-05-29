@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from ai.LLMManager import LLMManager
+from ai.guard import GuardAgent
 from langchain_core.prompts import ChatPromptTemplate
 
 app = FastAPI()
@@ -29,10 +30,14 @@ async def chat(
     message: ChatMessage,
     llm_manager: LLMManager = Depends(get_llm_manager)
 ):
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("user", "{message}")
-    ])
-    response = llm_manager.invoke(prompt, message=message.message)
-    # print(response)
-    return {"response": response[0]['text']}
+    guard_agent = GuardAgent()
+    guard_response = guard_agent.guard(message.message)
+    if guard_response['verdict'] == "relevant":
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT),
+            ("user", "{message}")
+        ])
+        response = llm_manager.invoke(prompt, message=message.message)
+        return {"response": response[0]['text']}
+    else:
+        return {"response": "I don't know. Please ask a question about Orbital."}
