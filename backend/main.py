@@ -2,7 +2,6 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from ai.LLMManager import LLMManager
-from ai.guard import GuardAgent
 from langchain_core.prompts import ChatPromptTemplate
 
 app = FastAPI()
