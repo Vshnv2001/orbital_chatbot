@@ -1,9 +1,18 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import text
 from ai.LLMManager import LLMManager
 from ai.guard import GuardAgent
+from ai.ChatAgent import ChatAgent
 from langchain_core.prompts import ChatPromptTemplate
+from ai.State import State
+from ai.PrunerAgent import PrunerAgent
+from ai.SQLAgent import SQLAgent
+from ai.SQLValidator import SQLValidator
+from csv_processor import process_csv_files, get_engine
+from ai.DatabaseManager import DatabaseManager
+import os
 
 app = FastAPI()
 
@@ -25,19 +34,57 @@ def get_llm_manager():
 class ChatMessage(BaseModel):
     message: str
 
+@app.on_event("startup")
+async def startup_event():
+    # Process CSV files and generate metadata
+    data_dir = os.path.join(os.path.dirname(__file__), "ai/kb/")
+    if os.path.exists(data_dir):
+        process_csv_files(data_dir)
+
 @app.post("/chat")
 async def chat(
     message: ChatMessage,
     llm_manager: LLMManager = Depends(get_llm_manager)
 ):
-    guard_agent = GuardAgent()
-    guard_response = guard_agent.guard(message.message)
-    if guard_response['verdict'] == "relevant":
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", SYSTEM_PROMPT),
-            ("user", "{message}")
-        ])
-        response = llm_manager.invoke(prompt, message=message.message)
-        return {"response": response[0]['text']}
-    else:
-        return {"response": "I don't know. Please ask a question about Orbital."}
+    state = State()
+    state.question = message.message
+    
+    engine = get_engine()
+    
+    with engine.connect() as conn:
+        # Fetch preprocessed table metadata
+        result = conn.execute(text("SELECT * FROM table_metadata"))
+        state.database_schema = result.fetchall()
+        
+        print("DATABASE SCHEMA:")
+        print(state.database_schema)
+        
+        # Pass question to Pruner Agent to retrieve relevant tables and columns
+        pruner_agent = PrunerAgent()
+        state.is_relevant = pruner_agent.prune(state)
+        
+        print("IS RELEVANT:")
+        print(state.is_relevant)
+        
+        if not state.is_relevant:
+            return {"response": "I don't know. Please ask a question about your employees, projects, or departments."}
+        
+        db_uri = "postgresql://postgres:postgres@postgres:5432/postgres"
+        
+        db_manager = DatabaseManager(db_uri)
+        sql_agent = SQLAgent(db_manager)
+        state.sql_query = sql_agent.generate_sql(state)
+        print("INITIAL SQL QUERY:")
+        print(state.sql_query)
+        
+        sql_validator = SQLValidator()
+        
+        results = db_manager.execute_query(state,sql_validator)
+        
+        print("RESULTS:")
+        print(results)
+        
+        chat_agent = ChatAgent()
+        response = chat_agent.answer_question(results, state.question, state.sql_query)
+        
+    return {"response": response}
